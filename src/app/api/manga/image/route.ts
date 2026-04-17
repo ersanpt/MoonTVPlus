@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import { getAuthorizedUsername } from '../_utils';
-import { getSuwayomiConfig } from '@/lib/suwayomi.client';
+import { getSuwayomiConfig, loginWithSimpleAuth } from '@/lib/suwayomi.client';
 
 export const runtime = 'nodejs';
 
@@ -34,10 +34,37 @@ export async function GET(request: NextRequest) {
 
     const config = await getSuwayomiConfig();
     const upstreamUrl = resolveUpstreamUrl(config.serverBaseUrl, pathOrUrl);
-    const response = await fetch(upstreamUrl, {
-      headers: config.token ? { Authorization: `Bearer ${config.token}` } : undefined,
+    const buildHeaders = async (forceRelogin: boolean) => {
+      if (config.authMode === 'basic_auth') {
+        if (!config.username || !config.password) {
+          throw new Error('Suwayomi basic_auth 缺少用户名或密码');
+        }
+
+        return {
+          Authorization: `Basic ${Buffer.from(`${config.username}:${config.password}`).toString('base64')}`,
+        };
+      }
+
+      if (config.authMode === 'simple_login') {
+        return {
+          Cookie: await loginWithSimpleAuth(config, forceRelogin),
+        };
+      }
+
+      return undefined;
+    };
+
+    let response = await fetch(upstreamUrl, {
+      headers: await buildHeaders(false),
       cache: 'no-store',
     });
+
+    if (response.status === 401 && config.authMode === 'simple_login') {
+      response = await fetch(upstreamUrl, {
+        headers: await buildHeaders(true),
+        cache: 'no-store',
+      });
+    }
 
     if (!response.ok) {
       return NextResponse.json(

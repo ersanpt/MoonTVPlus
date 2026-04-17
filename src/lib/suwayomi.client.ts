@@ -1,5 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { createHash } from 'crypto';
+
 import { getConfig } from './config';
 import {
   MangaChapter,
@@ -17,21 +19,115 @@ interface GraphQLResponse<T> {
 
 interface SuwayomiClientOptions {
   serverUrl?: string;
-  token?: string;
+  authMode?: 'none' | 'basic_auth' | 'simple_login';
+  username?: string;
+  password?: string;
 }
 
 interface ResolvedSuwayomiConfig {
   serverBaseUrl: string;
   serverUrl: string;
-  token?: string;
+  authMode: 'none' | 'basic_auth' | 'simple_login';
+  username?: string;
+  password?: string;
   defaultLang: string;
   sourceIds: string[];
   maxSources: number;
 }
 
+interface SuwayomiSessionCacheEntry {
+  cookieHeader: string;
+  expiresAt: number;
+}
+
+const SUWAYOMI_SESSION_TTL_MS = 25 * 60 * 1000;
+const suwayomiSessionCache = new Map<string, SuwayomiSessionCacheEntry>();
+
+function normalizeSuwayomiAuthMode(value?: string | null): 'none' | 'basic_auth' | 'simple_login' {
+  if (value === 'basic_auth' || value === 'simple_login') {
+    return value;
+  }
+  return 'none';
+}
+
+function buildBasicAuthHeader(username: string, password: string): string {
+  return `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+}
+
+function hashSimpleLoginPassword(password?: string): string {
+  return createHash('sha256').update(password || '').digest('hex');
+}
+
+function getSimpleLoginCacheKey(config: ResolvedSuwayomiConfig): string {
+  return `${config.serverBaseUrl}|${config.username || ''}|${hashSimpleLoginPassword(config.password)}`;
+}
+
+function getResponseSetCookieHeaders(response: Response): string[] {
+  const headers = response.headers as Headers & { getSetCookie?: () => string[] };
+  if (typeof headers.getSetCookie === 'function') {
+    return headers.getSetCookie();
+  }
+
+  const setCookie = response.headers.get('set-cookie');
+  return setCookie ? [setCookie] : [];
+}
+
+function extractCookieHeader(response: Response): string | null {
+  const cookies = getResponseSetCookieHeaders(response)
+    .map((item) => item.split(';', 1)[0]?.trim())
+    .filter(Boolean) as string[];
+
+  return cookies.length > 0 ? cookies.join('; ') : null;
+}
+
+export async function loginWithSimpleAuth(
+  config: ResolvedSuwayomiConfig,
+  forceRefresh = false
+): Promise<string> {
+  if (!config.username || !config.password) {
+    throw new Error('Suwayomi simple_login 缺少用户名或密码');
+  }
+
+  const cacheKey = getSimpleLoginCacheKey(config);
+  const cached = suwayomiSessionCache.get(cacheKey);
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+    return cached.cookieHeader;
+  }
+
+  const response = await fetch(
+    `${config.serverBaseUrl}/login.html?redirect=${encodeURIComponent('/api/graphql')}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        user: config.username,
+        pass: config.password,
+      }).toString(),
+      redirect: 'manual',
+      cache: 'no-store',
+    }
+  );
+
+  const cookieHeader = extractCookieHeader(response);
+  if (!cookieHeader) {
+    throw new Error(`Suwayomi simple_login 登录失败: ${response.status}`);
+  }
+
+  suwayomiSessionCache.set(cacheKey, {
+    cookieHeader,
+    expiresAt: Date.now() + SUWAYOMI_SESSION_TTL_MS,
+  });
+
+  return cookieHeader;
+}
+
 async function resolveSuwayomiConfig(options: SuwayomiClientOptions = {}): Promise<ResolvedSuwayomiConfig> {
-  let serverUrl = options.serverUrl || process.env.SUWAYOMI_URL || process.env.NEXT_PUBLIC_SUWAYOMI_URL || '';
-  let token = options.token || process.env.SUWAYOMI_AUTH_TOKEN || '';
+  let serverUrl = process.env.SUWAYOMI_URL || process.env.NEXT_PUBLIC_SUWAYOMI_URL || '';
+  let authMode = normalizeSuwayomiAuthMode(process.env.SUWAYOMI_AUTH_MODE);
+  let username = process.env.SUWAYOMI_USERNAME || '';
+  let password = process.env.SUWAYOMI_PASSWORD || '';
   let defaultLang = process.env.SUWAYOMI_DEFAULT_LANG || 'zh';
   let sourceIds: string[] = [];
   let maxSources = Number(process.env.SUWAYOMI_MAX_SOURCES || 10);
@@ -40,13 +136,28 @@ async function resolveSuwayomiConfig(options: SuwayomiClientOptions = {}): Promi
     const config = await getConfig();
     if (config.SuwayomiConfig?.Enabled) {
       serverUrl = config.SuwayomiConfig.ServerURL || serverUrl;
-      token = config.SuwayomiConfig.AuthToken || token;
+      authMode = normalizeSuwayomiAuthMode(config.SuwayomiConfig.AuthMode || authMode);
+      username = config.SuwayomiConfig.Username || username;
+      password = config.SuwayomiConfig.Password || password;
       defaultLang = config.SuwayomiConfig.DefaultLang || defaultLang;
       sourceIds = config.SuwayomiConfig.SourceIds || sourceIds;
       maxSources = config.SuwayomiConfig.MaxSources || maxSources;
     }
   } catch {
     // 配置读取失败时回退到环境变量
+  }
+
+  if (options.serverUrl !== undefined) {
+    serverUrl = options.serverUrl;
+  }
+  if (options.authMode !== undefined) {
+    authMode = normalizeSuwayomiAuthMode(options.authMode);
+  }
+  if (options.username !== undefined) {
+    username = options.username;
+  }
+  if (options.password !== undefined) {
+    password = options.password;
   }
 
   if (!serverUrl) {
@@ -58,7 +169,9 @@ async function resolveSuwayomiConfig(options: SuwayomiClientOptions = {}): Promi
   return {
     serverBaseUrl: normalizedBaseUrl,
     serverUrl: normalizedBaseUrl + '/api/graphql',
-    token: token || undefined,
+    authMode,
+    username: username || undefined,
+    password: password || undefined,
     defaultLang,
     sourceIds,
     maxSources,
@@ -73,6 +186,54 @@ export function buildSuwayomiImageProxyUrl(pathOrUrl: string): string {
   if (!pathOrUrl) return '';
   if (pathOrUrl.startsWith('/api/manga/image?')) return pathOrUrl;
   return `/api/manga/image?path=${encodeURIComponent(pathOrUrl)}`;
+}
+
+async function getSuwayomiRequestHeaders(
+  resolved: ResolvedSuwayomiConfig,
+  forceSimpleLoginRefresh = false
+): Promise<HeadersInit | undefined> {
+  if (resolved.authMode === 'basic_auth') {
+    if (!resolved.username || !resolved.password) {
+      throw new Error('Suwayomi basic_auth 缺少用户名或密码');
+    }
+
+    return {
+      Authorization: buildBasicAuthHeader(resolved.username, resolved.password),
+    };
+  }
+
+  if (resolved.authMode === 'simple_login') {
+    return {
+      Cookie: await loginWithSimpleAuth(resolved, forceSimpleLoginRefresh),
+    };
+  }
+
+  return undefined;
+}
+
+async function suwayomiFetch(
+  resolved: ResolvedSuwayomiConfig,
+  input: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const execute = async (forceSimpleLoginRefresh: boolean) => {
+    const authHeaders = await getSuwayomiRequestHeaders(resolved, forceSimpleLoginRefresh);
+    return fetch(input, {
+      ...init,
+      headers: {
+        ...(authHeaders || {}),
+        ...(init.headers || {}),
+      },
+      cache: 'no-store',
+    });
+  };
+
+  let response = await execute(false);
+  if (response.status === 401 && resolved.authMode === 'simple_login') {
+    response = await execute(true);
+  }
+
+  return response;
 }
 
 function normalizeMangaStatus(status?: string): string | undefined {
@@ -109,14 +270,12 @@ export class SuwayomiClient {
 
   private async graphqlRequest<T>(query: string, variables?: Record<string, any>, operationName?: string): Promise<T> {
     const resolved = await resolveSuwayomiConfig(this.options);
-    const response = await fetch(resolved.serverUrl, {
+    const response = await suwayomiFetch(resolved, resolved.serverUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(resolved.token ? { Authorization: `Bearer ${resolved.token}` } : {}),
       },
       body: JSON.stringify({ query, variables, operationName }),
-      cache: 'no-store',
     });
 
     if (!response.ok) {

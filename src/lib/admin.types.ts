@@ -246,7 +246,9 @@ export interface AdminConfig {
   SuwayomiConfig?: {
     Enabled: boolean; // 是否启用漫画展馆
     ServerURL: string; // Suwayomi 服务地址
-    AuthToken?: string; // 可选认证 Token
+    AuthMode?: 'none' | 'basic_auth' | 'simple_login'; // 认证模式
+    Username?: string; // 登录用户名
+    Password?: string; // 登录密码
     DefaultLang?: string; // 默认语言，如 zh
     SourceIds?: string[]; // 限制可用源
     MaxSources?: number; // 搜索时最多查询多少个源

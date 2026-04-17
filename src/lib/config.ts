@@ -627,7 +627,9 @@ export function configSelfCheck(adminConfig: AdminConfig): AdminConfig {
     adminConfig.SuwayomiConfig = {
       Enabled: process.env.SUWAYOMI_ENABLED === 'true',
       ServerURL: process.env.SUWAYOMI_URL || process.env.NEXT_PUBLIC_SUWAYOMI_URL || '',
-      AuthToken: process.env.SUWAYOMI_AUTH_TOKEN || '',
+      AuthMode: (process.env.SUWAYOMI_AUTH_MODE as 'none' | 'basic_auth' | 'simple_login' | undefined) || 'none',
+      Username: process.env.SUWAYOMI_USERNAME || '',
+      Password: process.env.SUWAYOMI_PASSWORD || '',
       DefaultLang: process.env.SUWAYOMI_DEFAULT_LANG || 'zh',
       SourceIds: [],
       MaxSources: Number(process.env.SUWAYOMI_MAX_SOURCES || 10),
@@ -639,8 +641,17 @@ export function configSelfCheck(adminConfig: AdminConfig): AdminConfig {
   if (adminConfig.SuwayomiConfig.ServerURL === undefined) {
     adminConfig.SuwayomiConfig.ServerURL = '';
   }
-  if (adminConfig.SuwayomiConfig.AuthToken === undefined) {
-    adminConfig.SuwayomiConfig.AuthToken = '';
+  if (
+    adminConfig.SuwayomiConfig.AuthMode !== 'basic_auth' &&
+    adminConfig.SuwayomiConfig.AuthMode !== 'simple_login'
+  ) {
+    adminConfig.SuwayomiConfig.AuthMode = 'none';
+  }
+  if (adminConfig.SuwayomiConfig.Username === undefined) {
+    adminConfig.SuwayomiConfig.Username = '';
+  }
+  if (adminConfig.SuwayomiConfig.Password === undefined) {
+    adminConfig.SuwayomiConfig.Password = '';
   }
   if (adminConfig.SuwayomiConfig.DefaultLang === undefined) {
     adminConfig.SuwayomiConfig.DefaultLang = 'zh';

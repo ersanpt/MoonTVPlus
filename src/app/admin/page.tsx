@@ -10127,7 +10127,9 @@ const SuwayomiConfigComponent = ({
   const { isLoading, withLoading } = useLoadingState();
   const [enabled, setEnabled] = useState(false);
   const [serverURL, setServerURL] = useState('');
-  const [authToken, setAuthToken] = useState('');
+  const [authMode, setAuthMode] = useState<'none' | 'basic_auth' | 'simple_login'>('none');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [defaultLang, setDefaultLang] = useState('zh');
   const [sourceIds, setSourceIds] = useState('');
   const [maxSources, setMaxSources] = useState(10);
@@ -10136,7 +10138,9 @@ const SuwayomiConfigComponent = ({
     if (config?.SuwayomiConfig) {
       setEnabled(config.SuwayomiConfig.Enabled || false);
       setServerURL(config.SuwayomiConfig.ServerURL || '');
-      setAuthToken(config.SuwayomiConfig.AuthToken || '');
+      setAuthMode(config.SuwayomiConfig.AuthMode || 'none');
+      setUsername(config.SuwayomiConfig.Username || '');
+      setPassword(config.SuwayomiConfig.Password || '');
       setDefaultLang(config.SuwayomiConfig.DefaultLang || 'zh');
       setSourceIds((config.SuwayomiConfig.SourceIds || []).join(','));
       setMaxSources(config.SuwayomiConfig.MaxSources || 10);
@@ -10146,7 +10150,9 @@ const SuwayomiConfigComponent = ({
   const buildConfig = () => ({
     Enabled: enabled,
     ServerURL: serverURL,
-    AuthToken: authToken,
+    AuthMode: authMode,
+    Username: authMode === 'none' ? '' : username,
+    Password: authMode === 'none' ? '' : password,
     DefaultLang: defaultLang || 'zh',
     SourceIds: sourceIds.split(',').map((item) => item.trim()).filter(Boolean),
     MaxSources: Math.max(1, maxSources || 10),
@@ -10180,6 +10186,34 @@ const SuwayomiConfigComponent = ({
     });
   };
 
+  const handleTest = async () => {
+    await withLoading('testSuwayomi', async () => {
+      try {
+        const response = await fetch('/api/admin/suwayomi', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ServerURL: serverURL,
+            AuthMode: authMode,
+            Username: username,
+            Password: password,
+            DefaultLang: defaultLang,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+          throw new Error(data.message || data.error || '测试连接失败');
+        }
+
+        showSuccess(data.message || '连接成功', showAlert);
+      } catch (error) {
+        showError(error instanceof Error ? error.message : '测试连接失败', showAlert);
+        throw error;
+      }
+    });
+  };
+
   return (
     <div className='space-y-6'>
       <div className='bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4'>
@@ -10188,6 +10222,7 @@ const SuwayomiConfigComponent = ({
         </h3>
         <div className='text-sm text-blue-800 dark:text-blue-200 space-y-1'>
           <p>• 漫画展馆通过 Suwayomi Server 的 GraphQL 接口搜索、拉取章节与阅读页。</p>
+          <p>• 认证仅支持 basic_auth 与 simple_login；未开启认证时请选择“无认证”。</p>
           <p>• 可限制默认语言、可用源白名单，以及单次搜索最多查询的源数量。</p>
           <p>• 保存后漫画模块会优先使用这里的配置，环境变量只作为兜底。</p>
         </div>
@@ -10222,15 +10257,56 @@ const SuwayomiConfigComponent = ({
         </div>
 
         <div>
-          <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>认证 Token</label>
-          <input
-            type='password'
-            value={authToken}
-            onChange={(e) => setAuthToken(e.target.value)}
-            placeholder='可选，若 Suwayomi 开启认证请填写'
-            className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100'
-          />
+          <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>认证方式</label>
+          <div className='grid grid-cols-1 gap-2 md:grid-cols-3'>
+            {[
+              { value: 'none', label: '无认证' },
+              { value: 'basic_auth', label: 'basic_auth' },
+              { value: 'simple_login', label: 'simple_login' },
+            ].map((item) => (
+              <button
+                key={item.value}
+                type='button'
+                onClick={() => setAuthMode(item.value as 'none' | 'basic_auth' | 'simple_login')}
+                className={`rounded-lg border px-3 py-2 text-sm transition-colors ${
+                  authMode === item.value
+                    ? 'border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-400 dark:bg-blue-900/30 dark:text-blue-200'
+                    : 'border-gray-300 text-gray-700 hover:bg-gray-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-800'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <p className='mt-1 text-xs text-gray-500 dark:text-gray-400'>
+            basic_auth 使用 Basic Authorization 头；simple_login 会向 /login.html 提交表单并复用返回 Cookie。
+          </p>
         </div>
+
+        {authMode !== 'none' && (
+          <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
+            <div>
+              <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>用户名</label>
+              <input
+                type='text'
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder='登录用户名'
+                className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+              />
+            </div>
+            <div>
+              <label className='block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2'>密码</label>
+              <input
+                type='password'
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder='登录密码'
+                className='w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100'
+              />
+            </div>
+          </div>
+        )}
 
         <div className='grid grid-cols-1 gap-4 md:grid-cols-2'>
           <div>
@@ -10267,6 +10343,13 @@ const SuwayomiConfigComponent = ({
         </div>
 
         <div className='flex gap-3'>
+          <button
+            onClick={handleTest}
+            disabled={!serverURL || isLoading('testSuwayomi')}
+            className={buttonStyles.primary}
+          >
+            {isLoading('testSuwayomi') ? '测试中...' : '测试连接'}
+          </button>
           <button
             onClick={handleSave}
             disabled={isLoading('saveSuwayomi')}
