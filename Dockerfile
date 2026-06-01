@@ -46,6 +46,7 @@ ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 ENV DOCKER_ENV=true
 ENV SQLITE_DB_PATH=/app/.data/moontv.db
+ENV OFFLINE_DOWNLOAD_DIR=/data
 
 # 从构建器中复制 standalone 输出
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
@@ -68,8 +69,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 # 从构建器中复制生产依赖（包含 Socket.IO / better-sqlite3）
 COPY --from=builder --chown=nextjs:nodejs /tmp/prod-deps/node_modules ./node_modules
 
-# 准备 SQLite 数据目录
-RUN mkdir -p /app/.data && chown -R nextjs:nodejs /app/.data
+# 准备 SQLite 数据目录和默认离线下载目录
+RUN mkdir -p /app/.data "$OFFLINE_DOWNLOAD_DIR" \
+  && chown -R nextjs:nodejs /app/.data "$OFFLINE_DOWNLOAD_DIR"
 
 # 切换到非特权用户
 USER nextjs
